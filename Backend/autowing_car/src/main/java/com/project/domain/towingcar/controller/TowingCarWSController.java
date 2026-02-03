@@ -12,7 +12,6 @@ import com.project.domain.mission.service.MissionService;
 import com.project.domain.towingcar.dto.TowingCarWebSocketDtos.CarConnectRequestDto;
 import com.project.domain.towingcar.dto.TowingCarWebSocketDtos.CarDisconnectRequestDto;
 import com.project.domain.towingcar.dto.TowingCarWebSocketDtos.CarDispatchRequestDto;
-import com.project.domain.towingcar.dto.TowingCarWebSocketDtos.CarDispatchRequestDto;
 import com.project.domain.towingcar.dto.TowingCarWebSocketDtos.CarMoveRequestDto;
 import com.project.domain.towingcar.dto.TowingCarWebSocketDtos.CarEmergencyRequestDto; // [NEW]
 import com.project.domain.towingcar.service.TowingCarService;

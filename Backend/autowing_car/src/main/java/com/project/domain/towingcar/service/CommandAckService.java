@@ -63,7 +63,7 @@ public class CommandAckService {
         }
 
         public String pendingKey() {
-            return pendingKey(vehicleId, commandType, sequence, commandId);
+            return CommandAckService.pendingKey(vehicleId, commandType, sequence, commandId);
         }
     }
 }

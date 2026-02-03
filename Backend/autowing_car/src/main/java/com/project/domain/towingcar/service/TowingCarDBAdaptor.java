@@ -59,10 +59,6 @@ public class TowingCarDBAdaptor {
         return towingCarRepository.save(car);
     }
 
-    public void saveDrivingLog(DrivingLog log) {
-        drivingLogRepository.save(log);
-    }
-
     public DrivingLog updateDrivingLog(DrivingLog log) {
         return drivingLogRepository.save(log);
     }

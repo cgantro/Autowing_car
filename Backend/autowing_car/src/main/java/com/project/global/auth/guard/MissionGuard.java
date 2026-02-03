@@ -6,7 +6,6 @@ import com.project.domain.flight.service.FlightDBAdaptor;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.core.Authentication;
-import org.springframework.security.core.GrantedAuthority;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -25,7 +24,7 @@ public class MissionGuard {
      */
     public boolean checkRequestOwnership(Authentication authentication, Long flightId) {
         // 1. PILOT 권한 체크
-        if (!hasRole(authentication, UserRole.PILOT)) {
+        if (!GuardSupport.hasRole(authentication, UserRole.PILOT)) {
             log.warn("🚨 [Security Block] PILOT 권한 없음: {}", authentication.getName());
             return false;
         }
@@ -56,25 +55,11 @@ public class MissionGuard {
      * 1. 사용자가 ATC(관제사) 권한을 가지고 있는가?
      */
     public boolean checkApprovePermission(Authentication authentication) {
-        if (!hasRole(authentication, UserRole.ATC)) {
+        if (!GuardSupport.hasRole(authentication, UserRole.ATC)) {
             log.warn("🚨 [Security Block] ATC(관제사) 권한 없음: {}", authentication.getName());
             return false;
         }
         return true;
     }
 
-    // --- Helper ---
-    private boolean hasRole(Authentication auth, UserRole role) {
-        if (auth == null || !auth.isAuthenticated())
-            return false;
-        String roleName = role.name();
-        for (GrantedAuthority authority : auth.getAuthorities()) {
-            // "ROLE_" 접두사 유무 모두 허용 (Spring Security 설정에 따라 다를 수 있음)
-            if (authority.getAuthority().equals(roleName) ||
-                    authority.getAuthority().equals("ROLE_" + roleName)) {
-                return true;
-            }
-        }
-        return false;
-    }
 }

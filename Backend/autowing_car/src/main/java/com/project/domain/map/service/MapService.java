@@ -253,7 +253,11 @@ public class MapService {
     }
 
     private double calculatePathCost(List<Edge> path) {
-        return path.stream().mapToDouble(Edge::getTravelTime).sum();
+        return path.stream().mapToDouble(this::edgeCost).sum();
+    }
+
+    private double edgeCost(Edge edge) {
+        return edge.getTravelTime() != null ? edge.getTravelTime() : edge.getDistance() / 10.0;
     }
 
     /**
@@ -295,8 +299,7 @@ public class MapService {
                 if (usageManager.isEdgeLocked(edge.getId()) || usageManager.isNodeLocked(neighbor.getId()))
                     continue;
 
-                double newG = gScore.getOrDefault(currentNode.getId(), Double.MAX_VALUE)
-                        + (edge.getTravelTime() != null ? edge.getTravelTime() : edge.getDistance() / 10.0);
+                double newG = gScore.getOrDefault(currentNode.getId(), Double.MAX_VALUE) + edgeCost(edge);
                 if (newG < gScore.getOrDefault(neighbor.getId(), Double.MAX_VALUE)) {
                     cameFrom.put(neighbor.getId(), edge);
                     gScore.put(neighbor.getId(), newG);

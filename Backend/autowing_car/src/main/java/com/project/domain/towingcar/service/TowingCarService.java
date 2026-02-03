@@ -21,7 +21,6 @@ import com.project.global.util.TxUtil; // [NEW]
 import com.project.domain.towingcar.mapper.TowingCarMapper; // [NEW]
 import java.util.HashMap;
 import java.util.UUID;
-import com.project.domain.towingcar.entity.DrivingLog;
 import com.project.domain.towingcar.entity.TowingCar;
 import com.project.domain.user.entity.User;
 import com.project.domain.user.service.UserDBAdaptor;
@@ -52,6 +51,7 @@ public class TowingCarService {
     private final TowingCarMqttService towingCarMqttService;
     private final TowingCarWebSocketService towingCarWebSocketService;
     private final TowingCarCacheService towingCarCacheService; // [NEW]
+    private final DrivingLogStreamService drivingLogStreamService;
     private final TowingCarMapper towingCarMapper; // [NEW]
     private final MissionTowingStateCoordinator stateCoordinator;
 
@@ -164,7 +164,7 @@ public class TowingCarService {
         // assignedCar.updateStatus(..., CarStatus.DTOKING); // REMOVED
 
         // ✅ 알림: WebSocket (Helper 메서드로 위임)
-        notifyCarConnected(assignedCar, pilotId);
+        notifyCarConnected(pilotId);
 
         // ✅ MQTT: 트랜잭션 커밋 후 전송
         final String carCode = assignedCar.getCode();
@@ -203,7 +203,7 @@ public class TowingCarService {
         log.info("✅ [Disconnect] Car {} returning to base (MOVING_TO_IDLE)", assignedCar.getCode());
 
         // ✅ 알림: WebSocket (Helper 메서드로 위임)
-        notifyCarDisconnected(assignedCar, pilotId);
+        notifyCarDisconnected(pilotId);
 
         // ✅ MQTT: Disconnect 명령을 따로 보낼 필요가 있는지 체크 (이미 Return Path를 보냄)
         // 만약 Disconnect라는 Action이 별도로 필요하다면 유지, 아니면 PARK 명령으로 대체됨.
@@ -323,7 +323,7 @@ public class TowingCarService {
             log.info("🎉 [Monitoring] Car {} reported TOWING complete!", carCode);
             Flight flight = flightDBAdaptor.getFlightByAssignedCar(assignedCar);
             if (flight != null) {
-                notifyTowingComplete(assignedCar, flight.getPilot().getEmail());
+                notifyTowingComplete(flight.getPilot().getEmail());
             }
         }
 
@@ -352,12 +352,23 @@ public class TowingCarService {
             }
         }
 
-        saveDrivingLog(assignedCar, mission);
+        drivingLogStreamService.append(assignedCar, mission);
 
         // [Final Step] 통합 브로드캐스트 (DTO 기반으로 Pilot + ATCs에게 전송)
         TowingCarStatusResponse responseDto = towingCarMapper.toResponseDTO(assignedCar); // [FIX] Use ResponseDTO
-        towingCarCacheService.saveCarStatus(carCode, responseDto); // [NEW] Save to Redis
-        towingCarWebSocketService.broadcastCarStatus(carCode, towingCarMapper.toDTO(assignedCar));
+        var websocketDto = towingCarMapper.toDTO(assignedCar);
+        TxUtil.executeAfterCommit(() -> {
+            try {
+                towingCarCacheService.saveCarStatus(carCode, responseDto);
+            } catch (Exception e) {
+                log.error("Committed car status could not be cached: carCode={}", carCode, e);
+            }
+            try {
+                towingCarWebSocketService.broadcastCarStatus(carCode, websocketDto);
+            } catch (Exception e) {
+                log.error("Committed car status could not be broadcast: carCode={}", carCode, e);
+            }
+        });
     }
 
     private void checkAndTriggerAutoActions(TowingCar assignedCar, double x, double y, CarStatus status) {
@@ -482,18 +493,6 @@ public class TowingCarService {
         return (dx * dx + dy * dy) <= (ARRIVAL_THRESHOLD * ARRIVAL_THRESHOLD);
     }
 
-    private void saveDrivingLog(TowingCar car, Mission mission) {
-        DrivingLog log = DrivingLog.builder()
-                .towingCarId(car.getId())
-                .missionId(mission != null ? mission.getId() : null)
-                .carStatus(car.getCarStatus())
-                .missionStatus(mission != null ? mission.getStatus() : MissionStatus.RUNNING)
-                .posX(car.getLastPosX()).posY(car.getLastPosY())
-                .heading(car.getLastHeading()).velocity(car.getLastVelocity()).battery(car.getBattery())
-                .build();
-        towingCarDBAdaptor.saveDrivingLog(log);
-    }
-
     // toResponseDTO, toDTO, parseCarStatus and sendMqttAfterCommit are removed
 
     /**
@@ -511,34 +510,22 @@ public class TowingCarService {
     /**
      * 연결 완료 알림
      */
-    private void notifyCarConnected(TowingCar car, String pilotId) {
-        towingCarWebSocketService.notifyPilotResult(pilotId,
-                MissionResponseDto.builder()
-                        .status("SUCCESS")
-                        .message("Connecting Initiated...")
-                        .build());
+    private void notifyCarConnected(String pilotId) {
+        notifyPilotResult(pilotId, "SUCCESS", "Connecting Initiated...");
     }
 
     /**
      * 연결 해제 알림
      */
-    private void notifyCarDisconnected(TowingCar car, String pilotId) {
-        towingCarWebSocketService.notifyPilotResult(pilotId,
-                MissionResponseDto.builder()
-                        .status("SUCCESS")
-                        .message("Disconnected Successfully")
-                        .build());
+    private void notifyCarDisconnected(String pilotId) {
+        notifyPilotResult(pilotId, "SUCCESS", "Disconnected Successfully");
     }
 
     /**
      * 모드 전환 결과 알림
      */
     private void notifyModeSwitched(String pilotId, String mode) {
-        towingCarWebSocketService.notifyPilotResult(pilotId,
-                MissionResponseDto.builder()
-                        .status("mode_switched")
-                        .message("Mode Switched to: " + mode)
-                        .build());
+        notifyPilotResult(pilotId, "mode_switched", "Mode Switched to: " + mode);
     }
 
     /**
@@ -546,11 +533,7 @@ public class TowingCarService {
      */
     private void notifyEmergencyStop(String pilotId, String carCode) {
         // 1. Pilot에게 알림
-        towingCarWebSocketService.notifyPilotResult(pilotId,
-                MissionResponseDto.builder()
-                        .status("emergency_stop")
-                        .message("EMERGENCY STOP EXECUTED")
-                        .build());
+        notifyPilotResult(pilotId, "emergency_stop", "EMERGENCY STOP EXECUTED");
 
         // 2. 관제사(Admin)에게 알림
         // AdminAlertDto 생성
@@ -568,12 +551,13 @@ public class TowingCarService {
     /**
      * 토잉 완료(연결 완료) 알림
      */
-    private void notifyTowingComplete(TowingCar car, String pilotId) {
+    private void notifyTowingComplete(String pilotId) {
+        notifyPilotResult(pilotId, "SUCCESS", "Towing Connected (Ready for Mission)");
+    }
+
+    private void notifyPilotResult(String pilotId, String status, String message) {
         towingCarWebSocketService.notifyPilotResult(pilotId,
-                MissionResponseDto.builder()
-                        .status("SUCCESS")
-                        .message("Towing Connected (Ready for Mission)")
-                        .build());
+                MissionResponseDto.builder().status(status).message(message).build());
     }
 
     @Transactional(readOnly = true)

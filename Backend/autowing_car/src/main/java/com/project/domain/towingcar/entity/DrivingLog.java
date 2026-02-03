@@ -11,7 +11,8 @@ import java.time.LocalDateTime;
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 @IdClass(DrivingLogId.class) // [NEW] Composite Key
 @Table(name = "driving_log", indexes = {
-        @Index(name = "idx_driving_log_car_time", columnList = "TOWING_CAR_ID, CREATED_AT")
+        @Index(name = "idx_driving_log_car_time", columnList = "TOWING_CAR_ID, CREATED_AT"),
+        @Index(name = "uk_driving_log_event_time", columnList = "event_id, CREATED_AT", unique = true)
 })
 public class DrivingLog {
 
@@ -45,6 +46,9 @@ public class DrivingLog {
 
     @Column(name = "MISSION_ID")
     private Long missionId;
+
+    @Column(name = "event_id", length = 36)
+    private String eventId;
 
     @Builder
     public DrivingLog(Double posX, Double posY, Double heading, Double velocity, Integer battery,

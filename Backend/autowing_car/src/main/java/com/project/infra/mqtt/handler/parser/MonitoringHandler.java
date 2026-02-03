@@ -2,8 +2,6 @@ package com.project.infra.mqtt.handler.parser;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.project.infra.mqtt.config.MqttIncomingMessage;
-import com.project.global.error.domain.mqtt.MalformedMqttPayloadException;
-
 import org.springframework.stereotype.Component;
 
 @Component
@@ -16,18 +14,11 @@ public class MonitoringHandler implements MqttTopicHandler {
 
     @Override
     public MqttIncomingMessage parse(String topic, JsonNode payload) {
-        String carCode;
-        if (payload.has("car_code")) {
-            carCode = payload.get("car_code").asText();
-        } else if (payload.has("carId")) {
-            carCode = payload.get("carId").asText();
-        } else {
-            throw new MalformedMqttPayloadException("Monitoring", new String[] { "car_code", "carId" });
-        }
+        String carCode = MqttPayloadParserSupport.requiredCarCode(payload, "Monitoring");
 
         return MqttIncomingMessage.CarData.builder()
                 .carCode(carCode)
-                .messageType("monitoring")
+                .messageType(getTopicType())
                 .payload(payload)
                 .build();
     }
