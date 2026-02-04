@@ -24,6 +24,10 @@ jwt:
 app:
   mqtt:
     mock: false
+  driving-log:
+    batch-size: ${DRIVING_LOG_BATCH_SIZE:500}
+    flush-interval-ms: ${DRIVING_LOG_FLUSH_INTERVAL_MS:1000}
+    pending-min-idle-ms: ${DRIVING_LOG_PENDING_MIN_IDLE_MS:30000}
   map:
     locations:
       - "file:/data/maps/node_*.json"

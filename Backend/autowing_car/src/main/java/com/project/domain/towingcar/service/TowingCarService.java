@@ -562,16 +562,9 @@ public class TowingCarService {
 
     @Transactional(readOnly = true)
     public List<TowingCarStatusResponse> getAllTowingCars() {
-        // Redis에서 먼저 조회
-        List<TowingCarStatusResponse> cachedCars = towingCarCacheService.getAllCars();
-        if (cachedCars != null && !cachedCars.isEmpty()) {
-            return cachedCars;
-        }
-        // 없으면 DB 조회 (Fallback) + Redis 워밍
-        List<TowingCarStatusResponse> dbCars = towingCarDBAdaptor.findAllCars().stream()
+        // Redis 인덱스는 만료·부분 갱신될 수 있으므로 차량 목록의 기준은 RDB로 둔다.
+        return towingCarDBAdaptor.findAllCars().stream()
                 .map(towingCarMapper::toResponseDTO)
                 .collect(java.util.stream.Collectors.toList());
-        dbCars.forEach(car -> towingCarCacheService.saveCarStatus(car.getCode(), car));
-        return dbCars;
     }
 }

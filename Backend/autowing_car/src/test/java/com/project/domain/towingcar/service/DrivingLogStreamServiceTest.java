@@ -9,14 +9,18 @@ import org.springframework.data.redis.core.StreamOperations;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.ParameterizedPreparedStatementSetter;
 import org.springframework.transaction.support.TransactionTemplate;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.test.util.ReflectionTestUtils;
 import com.project.domain.common.CarStatus;
 import com.project.domain.towingcar.entity.TowingCar;
 
 import java.util.List;
 import java.util.Map;
+import java.time.Duration;
 
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 import org.mockito.InOrder;
@@ -34,7 +38,8 @@ class DrivingLogStreamServiceTest {
     @BeforeEach
     void setUp() {
         ReflectionTestUtils.setField(service, "stream", "driving-log-stream");
-        ReflectionTestUtils.setField(service, "connectedCarCount", 1);
+        ReflectionTestUtils.setField(service, "configuredBatchSize", 500);
+        ReflectionTestUtils.setField(service, "pendingMinIdleMillis", 30000L);
         when(redisTemplate.opsForStream()).thenReturn(streamOperations);
         when(streamOperations.pending(anyString(), anyString(), any(Range.class), anyLong())).thenReturn(null);
         MapRecord<String, Object, Object> record = mock(MapRecord.class);
@@ -87,5 +92,53 @@ class DrivingLogStreamServiceTest {
         service.append(car, null);
 
         verify(jdbcTemplate).update(anyString(), any(org.springframework.jdbc.core.PreparedStatementSetter.class));
+    }
+
+    @Test
+    void appendsToRedisOnlyAfterVehicleStateTransactionCommits() {
+        TowingCar car = TowingCar.builder().id(1L).code("TC01").battery(90).carStatus(CarStatus.IDLE)
+                .lastPosX(1.0).lastPosY(2.0).lastHeading(0.5).lastVelocity(0.0).build();
+        TransactionSynchronizationManager.initSynchronization();
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        try {
+            service.append(car, null);
+            verify(streamOperations, never()).add(any(MapRecord.class));
+
+            for (TransactionSynchronization synchronization : TransactionSynchronizationManager.getSynchronizations()) {
+                synchronization.afterCommit();
+            }
+
+            verify(streamOperations).add(any(MapRecord.class));
+        } finally {
+            TransactionSynchronizationManager.clearSynchronization();
+            TransactionSynchronizationManager.setActualTransactionActive(false);
+        }
+    }
+
+    @Test
+    void rollbackDoesNotPublishAnOrphanedLogToRedis() {
+        TowingCar car = TowingCar.builder().id(1L).code("TC01").battery(90).carStatus(CarStatus.IDLE)
+                .lastPosX(1.0).lastPosY(2.0).lastHeading(0.5).lastVelocity(0.0).build();
+        TransactionSynchronizationManager.initSynchronization();
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        try {
+            service.append(car, null);
+            // A rollback never invokes afterCommit; clearing synchronization simulates that outcome.
+        } finally {
+            TransactionSynchronizationManager.clearSynchronization();
+            TransactionSynchronizationManager.setActualTransactionActive(false);
+        }
+        verify(streamOperations, never()).add(any(MapRecord.class));
+    }
+
+    @Test
+    void batchSizeAndPendingClaimAgeAreIndependentSettings() {
+        ReflectionTestUtils.setField(service, "configuredBatchSize", 750);
+        ReflectionTestUtils.setField(service, "pendingMinIdleMillis", 45000L);
+
+        Integer batchSize = ReflectionTestUtils.invokeMethod(service, "batchSize");
+        assertEquals(750, batchSize.intValue());
+        Duration minIdle = ReflectionTestUtils.invokeMethod(service, "pendingMinIdle");
+        assertEquals(Duration.ofSeconds(45), minIdle);
     }
 }

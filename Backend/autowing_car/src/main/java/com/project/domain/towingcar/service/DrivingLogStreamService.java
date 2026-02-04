@@ -13,6 +13,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.time.Duration;
 import java.time.LocalDateTime;
@@ -32,10 +34,13 @@ public class DrivingLogStreamService {
 
     @Value("${app.driving-log.stream:driving-log-stream}")
     private String stream;
-    @Value("${app.driving-log.connected-car-count:1}")
-    private int connectedCarCount;
+    @Value("${app.driving-log.batch-size:500}")
+    private int configuredBatchSize;
+    @Value("${app.driving-log.pending-min-idle-ms:30000}")
+    private long pendingMinIdleMillis;
 
-    private int batchSize() { return Math.max(1, connectedCarCount) * 600; }
+    private int batchSize() { return Math.max(1, configuredBatchSize); }
+    private Duration pendingMinIdle() { return Duration.ofMillis(Math.max(0, pendingMinIdleMillis)); }
     private static final String INSERT_SQL =
             "INSERT INTO driving_log (log_id, created_at, pos_x, pos_y, heading, velocity, battery, car_status, mission_status, towing_car_id, mission_id, event_id) " +
                     "VALUES (nextval('driving_log_seq'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
@@ -54,12 +59,29 @@ public class DrivingLogStreamService {
         fields.put("carStatus", car.getCarStatus().name());
         fields.put("missionId", mission == null ? "" : String.valueOf(mission.getId()));
         fields.put("missionStatus", mission == null || mission.getStatus() == null ? "" : mission.getStatus().name());
+        Runnable appendAfterCommit = () -> appendToStreamOrDatabase(fields, car.getCode());
+        if (TransactionSynchronizationManager.isActualTransactionActive()
+                && TransactionSynchronizationManager.isSynchronizationActive()) {
+            // Do not publish a log for vehicle state that may still roll back.
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    appendAfterCommit.run();
+                }
+            });
+        } else {
+            appendAfterCommit.run();
+        }
+    }
+
+    private void appendToStreamOrDatabase(Map<String, String> fields, String carCode) {
         try {
             redisTemplate.opsForStream().add(StreamRecords.mapBacked(fields).withStreamKey(stream));
         } catch (RuntimeException redisFailure) {
-            // Keep the log in the same relational transaction as the car state when
-            // Redis is unavailable. This is intentionally a slower emergency path.
-            log.error("Redis Stream unavailable; persisting driving log directly: carCode={}", car.getCode(), redisFailure);
+            // State has committed before this fallback runs, so the record cannot
+            // outlive a rolled-back state transaction.
+            log.error("Redis Stream unavailable; persisting committed driving log directly: carCode={}", carCode,
+                    redisFailure);
             persistRecord(fields);
         }
     }
@@ -104,7 +126,7 @@ public class DrivingLogStreamService {
         int i = 0;
         for (PendingMessage message : pending) ids[i++] = message.getId();
         List<MapRecord<String, Object, Object>> claimed = redisTemplate.opsForStream()
-                .claim(stream, GROUP, CONSUMER, Duration.ZERO, ids);
+                .claim(stream, GROUP, CONSUMER, pendingMinIdle(), ids);
         return claimed == null ? List.of() : claimed;
     }
 
