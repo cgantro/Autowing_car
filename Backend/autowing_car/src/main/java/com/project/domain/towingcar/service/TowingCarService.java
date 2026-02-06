@@ -21,6 +21,7 @@ import com.project.global.util.TxUtil; // [NEW]
 import com.project.domain.towingcar.mapper.TowingCarMapper; // [NEW]
 import java.util.HashMap;
 import java.util.UUID;
+import com.project.domain.towingcar.entity.DrivingLog;
 import com.project.domain.towingcar.entity.TowingCar;
 import com.project.domain.user.entity.User;
 import com.project.domain.user.service.UserDBAdaptor;
@@ -51,7 +52,7 @@ public class TowingCarService {
     private final TowingCarMqttService towingCarMqttService;
     private final TowingCarWebSocketService towingCarWebSocketService;
     private final TowingCarCacheService towingCarCacheService; // [NEW]
-    private final DrivingLogStreamService drivingLogStreamService;
+    private final DrivingLogWriteBehindService drivingLogWriteBehindService;
     private final TowingCarMapper towingCarMapper; // [NEW]
     private final MissionTowingStateCoordinator stateCoordinator;
 
@@ -352,7 +353,7 @@ public class TowingCarService {
             }
         }
 
-        drivingLogStreamService.append(assignedCar, mission);
+        saveDrivingLog(assignedCar, mission);
 
         // [Final Step] 통합 브로드캐스트 (DTO 기반으로 Pilot + ATCs에게 전송)
         TowingCarStatusResponse responseDto = towingCarMapper.toResponseDTO(assignedCar); // [FIX] Use ResponseDTO
@@ -493,6 +494,18 @@ public class TowingCarService {
         return (dx * dx + dy * dy) <= (ARRIVAL_THRESHOLD * ARRIVAL_THRESHOLD);
     }
 
+    private void saveDrivingLog(TowingCar car, Mission mission) {
+        DrivingLog log = DrivingLog.builder()
+                .towingCarId(car.getId())
+                .missionId(mission != null ? mission.getId() : null)
+                .carStatus(car.getCarStatus())
+                .missionStatus(mission != null ? mission.getStatus() : MissionStatus.RUNNING)
+                .posX(car.getLastPosX()).posY(car.getLastPosY())
+                .heading(car.getLastHeading()).velocity(car.getLastVelocity()).battery(car.getBattery())
+                .build();
+        // Persist telemetry through the write-behind queue after the state transaction commits.
+        drivingLogWriteBehindService.enqueueAfterCommit(log);
+    }
     // toResponseDTO, toDTO, parseCarStatus and sendMqttAfterCommit are removed
 
     /**
