@@ -84,6 +84,10 @@
 - **Backend**: JDK 17+, MySQL, Redis
 - **AI/Embedded**: Python 3.8+, ROS2 environment
 
+### 📈 성능/과부하 테스트
+
+- 백엔드 부하 테스트 가이드 및 k6 스크립트는 `Backend/autowing_car/perf/README.md` 와 `Backend/autowing_car/perf/load-and-stress.js` 를 참고하세요.
+
 ### 💻 로컬 실행 (Local Development)
 
 #### 1. Frontend
