@@ -15,12 +15,11 @@ public class MissionCacheService {
 
     private final RedisTemplate<String, Object> redisTemplate;
 
-    // Key Pattern: mission:{missionId}
-    private static final String KEY_PREFIX = "mission:";
-    private static final Duration CACHE_TTL = Duration.ofDays(1); // Cache active missions
+    private static final String MISSION_KEY_PREFIX = "mission:latest:";
+    private static final Duration CACHE_TTL = Duration.ofDays(1);
 
     public void saveMission(MissionResponseDto missionDto) {
-        String key = KEY_PREFIX + missionDto.getMissionId();
+        String key = missionKey(missionDto.getMissionId());
         try {
             redisTemplate.opsForValue().set(key, missionDto, CACHE_TTL);
             log.debug("💾 [Redis] Saved Mission: {}", missionDto.getMissionId());
@@ -30,11 +29,10 @@ public class MissionCacheService {
     }
 
     public MissionResponseDto getMission(Long missionId) {
-        String key = KEY_PREFIX + missionId;
         try {
-            Object data = redisTemplate.opsForValue().get(key);
-            if (data instanceof MissionResponseDto) {
-                return (MissionResponseDto) data;
+            Object data = redisTemplate.opsForValue().get(missionKey(missionId));
+            if (data instanceof MissionResponseDto missionResponseDto) {
+                return missionResponseDto;
             }
         } catch (Exception e) {
             log.error("❌ [Redis] Failed to get mission {}: {}", missionId, e.getMessage());
@@ -43,6 +41,10 @@ public class MissionCacheService {
     }
 
     public void deleteMission(Long missionId) {
-        redisTemplate.delete(KEY_PREFIX + missionId);
+        redisTemplate.delete(missionKey(missionId));
+    }
+
+    private String missionKey(Long missionId) {
+        return MISSION_KEY_PREFIX + missionId;
     }
 }
