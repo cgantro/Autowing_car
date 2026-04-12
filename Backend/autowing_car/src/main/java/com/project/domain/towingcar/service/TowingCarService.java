@@ -1,6 +1,5 @@
 package com.project.domain.towingcar.service;
 
-import com.fasterxml.jackson.databind.JsonNode;
 import com.project.domain.common.CarStatus;
 import com.project.domain.common.MissionStatus;
 import com.project.domain.flight.entity.Flight;
@@ -8,8 +7,6 @@ import com.project.domain.flight.service.FlightDBAdaptor;
 import com.project.domain.map.entity.Edge;
 import com.project.domain.map.entity.Node;
 import com.project.domain.map.service.MapDBAdaptor;
-import com.project.domain.user.service.UserDBAdaptor;
-
 import com.project.domain.mission.dto.MissionWebSocketDtos.MissionResponseDto;
 import com.project.domain.mission.entity.Mission;
 import com.project.domain.mission.service.MissionDBAdaptor;
@@ -17,6 +14,8 @@ import com.project.domain.towingcar.dto.TowingCarWebSocketDtos.*;
 import com.project.domain.mission.dto.MissionWebSocketDtos.AdminAlertDto;
 import com.project.domain.mission.dto.MissionWebSocketDtos.NotificationType; // [NEW]
 import com.project.domain.map.service.MapService; // [NEW]
+import com.project.domain.operation.MissionTowingStateCoordinator;
+import com.project.infra.mqtt.application.dto.CarMonitoringDto;
 import java.util.List; // [NEW]
 import com.project.global.util.TxUtil; // [NEW]
 import com.project.domain.towingcar.mapper.TowingCarMapper; // [NEW]
@@ -37,7 +36,6 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.util.Map;
 
-import com.project.domain.towingcar.constant.CarCommand;
 import com.project.domain.towingcar.dto.TowingCarStatusResponse;
 
 @Slf4j
@@ -55,6 +53,7 @@ public class TowingCarService {
     private final TowingCarWebSocketService towingCarWebSocketService;
     private final TowingCarCacheService towingCarCacheService; // [NEW]
     private final TowingCarMapper towingCarMapper; // [NEW]
+    private final MissionTowingStateCoordinator stateCoordinator;
 
     // [Restored Configuration Fields]
     private final String START_NODE = "n2";
@@ -271,16 +270,16 @@ public class TowingCarService {
     // =========================================================================
 
     @Transactional
-    public void processCarMonitoring(String carCode, JsonNode payload) {
+    public void processCarMonitoring(CarMonitoringDto monitoringDto) {
+        String carCode = monitoringDto.getCarCode();
         TowingCar assignedCar = towingCarDBAdaptor.getCarByCode(carCode);
 
-        // Parse Data
-        double x = payload.get("x").asDouble();
-        double y = payload.get("y").asDouble();
-        double heading = payload.get("yaw").asDouble();
-        double velocity = payload.get("v").asDouble();
-        CarStatus status = CarStatus.from(payload.path("mode").asText());
-        int battery = payload.get("battery").asInt();
+        double x = monitoringDto.getX();
+        double y = monitoringDto.getY();
+        double heading = monitoringDto.getHeading();
+        double velocity = monitoringDto.getVelocity();
+        CarStatus status = monitoringDto.getStatus();
+        int battery = monitoringDto.getBattery();
 
         // [Safeguard] Prevent Stale Status Overwrite
         // If DB is already DOCKING (Transitioning), but Car reports MOVING_TO_GATE
@@ -316,6 +315,7 @@ public class TowingCarService {
 
         // DB Update & Log
         CarStatus oldStatus = assignedCar.getCarStatus();
+        status = stateCoordinator.resolveCarStatus(assignedCar, status);
         assignedCar.updateStatus(x, y, heading, velocity, battery, status);
 
         // [New Logic] 1-4. 토잉카가 토잉 완료(TOWING) 상태를 보냈을 때 -> 기장에게 즉시 알림
@@ -342,7 +342,7 @@ public class TowingCarService {
 
         // [Status Tracking] Car status -> Mission status sync
         if (mission != null && mission.getStatus() == MissionStatus.RUNNING) {
-            if (status == CarStatus.STOP) {
+            if (status == CarStatus.STOP && stateCoordinator.canPauseMission(mission)) {
                 mission.updateStatus(MissionStatus.PAUSED);
                 missionDBAdaptor.save(mission);
                 log.warn("⚠️ [Monitoring] Car {} STOPPED -> Mission {} PAUSED", carCode, mission.getId());
@@ -390,7 +390,7 @@ public class TowingCarService {
                 // 2. Complete Mission if exists
                 if (assignedCar.getCurrentMissionId() != null) {
                     Mission mission = missionDBAdaptor.getMissionById(assignedCar.getCurrentMissionId());
-                    if (mission != null && mission.getStatus() == MissionStatus.RUNNING) {
+                    if (mission != null && stateCoordinator.canCompleteMission(mission)) {
                         mission.updateStatus(MissionStatus.COMPLETED);
                         missionDBAdaptor.save(mission);
 
@@ -432,8 +432,10 @@ public class TowingCarService {
         // [NEW] Mission 상태를 PAUSED로 변경
         missionDBAdaptor.findByCarCodeAndStatus(carCode, MissionStatus.RUNNING)
                 .ifPresent(mission -> {
-                    mission.updateStatus(MissionStatus.PAUSED);
-                    missionDBAdaptor.save(mission);
+                    if (stateCoordinator.canPauseMission(mission)) {
+                        mission.updateStatus(MissionStatus.PAUSED);
+                        missionDBAdaptor.save(mission);
+                    }
                     log.info("[Mission] Status changed to PAUSED: missionId={}", mission.getId());
                 });
 
@@ -457,8 +459,10 @@ public class TowingCarService {
                 .orElseThrow(() -> new IllegalStateException("No paused mission for car: " + carCode));
 
         // 2. Mission 상태를 RUNNING으로 변경
-        mission.updateStatus(MissionStatus.RUNNING);
-        missionDBAdaptor.save(mission);
+        if (stateCoordinator.canResumeMission(mission)) {
+            mission.updateStatus(MissionStatus.RUNNING);
+            missionDBAdaptor.save(mission);
+        }
 
         // 3. MQTT 재개 명령
         TxUtil.executeAfterCommit(() -> towingCarMqttService.resumeCar(carCode));
@@ -579,9 +583,11 @@ public class TowingCarService {
         if (cachedCars != null && !cachedCars.isEmpty()) {
             return cachedCars;
         }
-        // 없으면 DB 조회 (Fallback)
-        return towingCarDBAdaptor.findAllCars().stream()
+        // 없으면 DB 조회 (Fallback) + Redis 워밍
+        List<TowingCarStatusResponse> dbCars = towingCarDBAdaptor.findAllCars().stream()
                 .map(towingCarMapper::toResponseDTO)
                 .collect(java.util.stream.Collectors.toList());
+        dbCars.forEach(car -> towingCarCacheService.saveCarStatus(car.getCode(), car));
+        return dbCars;
     }
 }

@@ -27,6 +27,8 @@ import java.util.regex.Pattern;
 @Slf4j
 public class MapLoadingService {
 
+    private static final double RDP_EPSILON = 0.1;
+
     private final EdgeRepository edgeRepository;
     private final NodeRepository nodeRepository;
     private final ObjectMapper objectMapper;
@@ -160,7 +162,7 @@ public class MapLoadingService {
                 int defaultMaxSpeed = 3;
                 double travelTime = totalDistance / defaultMaxSpeed;
 
-                List<RdpSimplifier.Point> simplified = RdpSimplifier.simplify(rawPoints, 0.1);
+                List<RdpSimplifier.Point> simplified = RdpSimplifier.simplify(rawPoints, RDP_EPSILON);
                 String waypointsJson = objectMapper.writeValueAsString(simplified);
 
                 // Forward Edge
