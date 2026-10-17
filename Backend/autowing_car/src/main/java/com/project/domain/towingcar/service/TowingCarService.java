@@ -52,6 +52,7 @@ public class TowingCarService {
     private final TowingCarMqttService towingCarMqttService;
     private final TowingCarWebSocketService towingCarWebSocketService;
     private final TowingCarCacheService towingCarCacheService; // [NEW]
+    private final DrivingLogWriteBehindService drivingLogWriteBehindService;
     private final TowingCarMapper towingCarMapper; // [NEW]
     private final MissionTowingStateCoordinator stateCoordinator;
 
@@ -491,7 +492,13 @@ public class TowingCarService {
                 .posX(car.getLastPosX()).posY(car.getLastPosY())
                 .heading(car.getLastHeading()).velocity(car.getLastVelocity()).battery(car.getBattery())
                 .build();
-        towingCarDBAdaptor.saveDrivingLog(log);
+        if (drivingLogWriteBehindService.isEnabled()) {
+            // Telemetry is buffered only after the state transaction commits.
+            drivingLogWriteBehindService.enqueueAfterCommit(log);
+        } else {
+            // Safe default for installations without a Redis write-behind worker.
+            towingCarDBAdaptor.saveDrivingLog(log);
+        }
     }
 
     // toResponseDTO, toDTO, parseCarStatus and sendMqttAfterCommit are removed
