@@ -38,6 +38,14 @@ logging:
 app:
   mqtt:
     mock: false
+  driving-log-write-behind:
+    # Enable only after testing Redis persistence and DB replay behavior.
+    enabled: ${DRIVING_LOG_WRITE_BEHIND_ENABLED:false}
+    batch-size: ${DRIVING_LOG_WRITE_BEHIND_BATCH_SIZE:500}
+    max-batches-per-poll: ${DRIVING_LOG_WRITE_BEHIND_MAX_BATCHES:20}
+    poll-ms: ${DRIVING_LOG_WRITE_BEHIND_POLL_MS:250}
+    # Use one active writer process per Redis consumer group.
+    consumer-name: ${DRIVING_LOG_WRITE_BEHIND_CONSUMER:writer-1}
 
 springwolf:
   enabled: true
