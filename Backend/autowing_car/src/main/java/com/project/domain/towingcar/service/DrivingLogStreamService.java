@@ -59,10 +59,7 @@ public class DrivingLogStreamService {
         fields.put("carStatus", car.getCarStatus().name());
         fields.put("missionId", mission == null ? "" : String.valueOf(mission.getId()));
         fields.put("missionStatus", mission == null || mission.getStatus() == null ? "" : mission.getStatus().name());
-        // Persist with the caller's vehicle-state transaction first. Redis is a
-        // delivery buffer, so a crash between DB commit and XADD cannot lose the log.
-        persistRecord(fields);
-        Runnable appendAfterCommit = () -> appendToStream(fields, car.getCode());
+        Runnable appendAfterCommit = () -> appendToStreamOrDatabase(fields, car.getCode());
         if (TransactionSynchronizationManager.isActualTransactionActive()
                 && TransactionSynchronizationManager.isSynchronizationActive()) {
             // Do not publish a log for vehicle state that may still roll back.
@@ -77,13 +74,15 @@ public class DrivingLogStreamService {
         }
     }
 
-    private void appendToStream(Map<String, String> fields, String carCode) {
+    private void appendToStreamOrDatabase(Map<String, String> fields, String carCode) {
         try {
             redisTemplate.opsForStream().add(StreamRecords.mapBacked(fields).withStreamKey(stream));
         } catch (RuntimeException redisFailure) {
-            // The canonical DB record is already committed with the vehicle state.
-            log.warn("Redis Stream unavailable; driving log remains safely persisted in the database: carCode={}",
-                    carCode, redisFailure);
+            // State has committed before this fallback runs, so the record cannot
+            // outlive a rolled-back state transaction.
+            log.error("Redis Stream unavailable; persisting committed driving log directly: carCode={}", carCode,
+                    redisFailure);
+            persistRecord(fields);
         }
     }
 

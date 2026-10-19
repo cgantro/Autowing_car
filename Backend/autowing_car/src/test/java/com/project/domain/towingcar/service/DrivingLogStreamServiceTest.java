@@ -95,18 +95,6 @@ class DrivingLogStreamServiceTest {
     }
 
     @Test
-    void persistsCanonicalLogBeforePublishingToRedis() {
-        TowingCar car = TowingCar.builder().id(1L).code("TC01").battery(90).carStatus(CarStatus.IDLE)
-                .lastPosX(1.0).lastPosY(2.0).lastHeading(0.5).lastVelocity(0.0).build();
-
-        service.append(car, null);
-
-        InOrder order = inOrder(jdbcTemplate, streamOperations);
-        order.verify(jdbcTemplate).update(anyString(), any(org.springframework.jdbc.core.PreparedStatementSetter.class));
-        order.verify(streamOperations).add(any(MapRecord.class));
-    }
-
-    @Test
     void appendsToRedisOnlyAfterVehicleStateTransactionCommits() {
         TowingCar car = TowingCar.builder().id(1L).code("TC01").battery(90).carStatus(CarStatus.IDLE)
                 .lastPosX(1.0).lastPosY(2.0).lastHeading(0.5).lastVelocity(0.0).build();
@@ -114,7 +102,6 @@ class DrivingLogStreamServiceTest {
         TransactionSynchronizationManager.setActualTransactionActive(true);
         try {
             service.append(car, null);
-            verify(jdbcTemplate).update(anyString(), any(org.springframework.jdbc.core.PreparedStatementSetter.class));
             verify(streamOperations, never()).add(any(MapRecord.class));
 
             for (TransactionSynchronization synchronization : TransactionSynchronizationManager.getSynchronizations()) {

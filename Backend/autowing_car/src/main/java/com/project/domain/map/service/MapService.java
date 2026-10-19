@@ -178,10 +178,6 @@ public class MapService {
                     rootPath.add(prevPath.get(i - 1));
 
                 Set<Long> excluded = new HashSet<>();
-                Set<Long> excludedNodes = new HashSet<>();
-                for (Edge rootEdge : rootPath) {
-                    excludedNodes.add(rootEdge.getSrcNode().getId());
-                }
                 // Block edges used in previous k paths that share the same root path
                 for (List<Edge> p : resultPaths) {
                     if (isSameRoot(p, rootPath, i) && i < p.size()) {
@@ -193,7 +189,7 @@ public class MapService {
                 excluded.add(spurEdge.getId());
 
                 // Calculate spur path from spurNode to end
-                List<Edge> spurPath = findSinglePath(spurNode, end, excluded, excludedNodes);
+                List<Edge> spurPath = findSinglePath(spurNode, end, excluded);
 
                 if (!spurPath.isEmpty()) {
                     List<Edge> totalPath = new ArrayList<>(rootPath);
@@ -268,14 +264,6 @@ public class MapService {
      * Modified A* Algorithm (Supports excluded edges)
      */
     private List<Edge> findSinglePath(Node start, Node end, Set<Long> excludedEdges) {
-        return findSinglePath(start, end, excludedEdges, Collections.emptySet());
-    }
-
-    private List<Edge> findSinglePath(Node start, Node end, Set<Long> excludedEdges, Set<Long> excludedNodes) {
-        double maxSpeed = mapInfoRepository.findByBasicMapTrue()
-                .map(MapInfo::getMaxSpeed)
-                .filter(speed -> speed != null && Double.isFinite(speed) && speed > 0.0)
-                .orElse(10.0);
         PriorityQueue<PathNode> openSet = new PriorityQueue<>(
                 Comparator.comparingDouble(PathNode::getF));
         Map<Long, Double> gScore = new HashMap<>();
@@ -283,7 +271,7 @@ public class MapService {
         Set<Long> closedSet = new HashSet<>();
 
         gScore.put(start.getId(), 0.0);
-        openSet.add(new PathNode(start, 0.0, heuristic(start, end, maxSpeed)));
+        openSet.add(new PathNode(start, 0.0, heuristic(start, end)));
 
         while (!openSet.isEmpty()) {
             PathNode current = openSet.poll();
@@ -302,8 +290,6 @@ public class MapService {
                     continue;
 
                 Node neighbor = edge.getDstNode();
-                if (excludedNodes.contains(neighbor.getId()))
-                    continue;
                 if (closedSet.contains(neighbor.getId()))
                     continue;
                 if (edge.getStatus() == MapStatus.BLOCKED || neighbor.getStatus() == MapStatus.BLOCKED)
@@ -317,7 +303,7 @@ public class MapService {
                 if (newG < gScore.getOrDefault(neighbor.getId(), Double.MAX_VALUE)) {
                     cameFrom.put(neighbor.getId(), edge);
                     gScore.put(neighbor.getId(), newG);
-                    openSet.add(new PathNode(neighbor, newG, newG + heuristic(neighbor, end, maxSpeed)));
+                    openSet.add(new PathNode(neighbor, newG, newG + heuristic(neighbor, end)));
                 }
             }
         }
@@ -417,13 +403,17 @@ public class MapService {
                 .build();
     }
 
-    // Heuristic: Estimated Travel Time using the max-speed snapshot for this A* search.
-    private double heuristic(Node a, Node b, double maxSpeed) {
+    // Heuristic: Estimated Travel Time (Distance / Max Speed)
+    private double heuristic(Node a, Node b) {
         double dx = a.getPosX() - b.getPosX();
         double dy = a.getPosY() - b.getPosY();
         double distance = Math.sqrt(dx * dx + dy * dy);
 
         // MapInfo에서 최대 속도 가져오기 (기본값: 10.0)
+        double maxSpeed = mapInfoRepository.findByBasicMapTrue()
+                .map(info -> info.getMaxSpeed())
+                .orElse(10.0);
+
         return distance / maxSpeed;
     }
 
